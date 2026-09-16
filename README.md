@@ -10,6 +10,10 @@
 
 ## 游戏截图
 
+**玩法演示**（开始界面 → 关卡选择 → 游戏过程含一次碰撞 → 通关结算）：
+
+![玩法演示](docs/screenshots/demo.gif)
+
 | 开始界面 | 关卡选择 | 游戏界面 |
 |---|---|---|
 | ![开始界面](docs/screenshots/00_menu.png) | ![关卡选择](docs/screenshots/07_select.png) | ![游戏界面](docs/screenshots/01_playing.png) |
@@ -18,7 +22,7 @@
 |---|---|---|
 | ![碰撞反馈](docs/screenshots/02_collision.png) | ![通关](docs/screenshots/03_win.png) | ![失败](docs/screenshots/04_lose.png) |
 
-以上截图均由 `tools/capture_screenshots.py` 驱动真实游戏代码渲染生成，非手工绘制。
+以上画面均由脚本驱动真实游戏代码渲染生成，非手工绘制：演示 GIF 由 `tools/make_gif.py` 生成，截图由 `tools/capture_screenshots.py` 生成，改动界面后可一键重出。
 
 ---
 
