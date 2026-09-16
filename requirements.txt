@@ -1,3 +1,6 @@
-# 运行本项目所需依赖
+# 运行游戏所需依赖
 # 安装：pip install -r requirements.txt
 pygame==2.6.1
+
+# 以下依赖仅生成演示 GIF 时需要（tools/make_gif.py），运行游戏不需要
+# pillow==12.3.0
