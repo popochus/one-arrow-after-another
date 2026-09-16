@@ -324,6 +324,54 @@ def test_t10():
           recorded and shown and resumed)
 
 
+def test_t11():
+    """T11（补充）结算界面的「重玩本关」按钮：重开本关，而不是跳到下一关。"""
+    game = new_game()
+    for arrow in solve(game.board):        # 打通第 1 关，进入结算界面
+        click_cell(game, arrow.row, arrow.col)
+    game.update(1.0)
+
+    actions = renderer.bottom_actions(game)
+    rects = renderer.bottom_button_rects(game)
+    replay_rect = next(rect for (action, _text, _sec), rect
+                       in zip(actions, rects) if action == "replay")
+
+    game.on_click(replay_rect.center)
+    replayed = (game.state == game.STATE_PLAYING
+                and game.level_index == 0
+                and game.board.remaining == game.arrow_total
+                and game.mistakes == 0
+                and game.result is None)
+
+    check("T11", "结算界面点击「重玩本关」", "回到本关初始状态，且不会跳到下一关",
+          f"当前第 {game.level_index + 1} 关，剩余 {game.board.remaining}"
+          f"/{game.arrow_total}，失误 {game.mistakes}",
+          replayed)
+
+
+def test_t12():
+    """T12（补充）键盘 R 重新开始：游戏中与结算界面都应生效。"""
+    game = new_game()
+    click_cell(game, 0, 4)                 # 先消掉一个箭头，制造进度
+    pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_r))
+    game.handle_events()
+    in_play = (game.board.remaining == game.arrow_total and game.mistakes == 0)
+
+    game = new_game()
+    for arrow in solve(game.board):
+        click_cell(game, arrow.row, arrow.col)
+    game.update(1.0)
+    pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_r))
+    game.handle_events()
+    in_result = (game.state == game.STATE_PLAYING
+                 and game.board.remaining == game.arrow_total
+                 and game.result is None)
+
+    check("T12", "键盘 R 重新开始", "游戏中与结算界面按 R 都能重置本关",
+          f"游戏中重置={in_play}，结算界面重置={in_result}",
+          in_play and in_result)
+
+
 # ==================== 报告输出 ====================
 
 # 作业第 5 节点名要求的六项测试，单独成表，方便直接贴进博客
@@ -402,6 +450,8 @@ def main():
     test_t08()
     test_t09()
     test_t10()
+    test_t11()
+    test_t12()
 
     width = 78
     print("=" * width)
