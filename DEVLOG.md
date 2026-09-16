@@ -250,4 +250,27 @@
 
 ---
 
+### 记录 9：远程仓库配置与推送（含代理与凭据问题排查）
+
+- **我的要求**：把本地仓库推送到 GitHub。
+- **借助何种 AIGC 技术**：WorkBuddy
+- **AI 实现或提供了什么**：
+  1. 配置远程 `origin` 指向 `https://github.com/popochus/one-arrow-after-another.git`；
+  2. 直连 `github.com` 报 `schannel: server closed abruptly` 时，判断为 TLS 被中断，
+     改用本机代理 127.0.0.1:7890 测试连通（HTTP 200），并把 `http.proxy` / `https.proxy`
+     写入 git 全局配置；
+  3. 首次推送卡死，通过 `tasklist` 发现执行的其实是 `git-credential-helper-sel`
+     （交互式选择器）而非 GCM。定位到系统级配置 `etc/gitconfig` 里的
+     `credential.helper = helper-selector` 排在最前，会等待终端输入；
+  4. 清理被终止进程遗留的 `gitconfig.lock` → 移除系统级 helper-selector → 只保留
+     `manager`，让凭据管理器以弹窗方式完成 OAuth 授权；
+  5. 推送后用 GitHub API 独立复核：远程 `refs/heads/main` 的 SHA 与本地 HEAD 一致，
+     13 条提交与 27 个文件均在位。
+- **实际效果**：推送成功，`https://github.com/popochus/one-arrow-after-another` 可公开访问。
+- **人工修改**：
+  - 由本人完成 GitHub OAuth 授权（这是唯一必须人工参与的步骤）；
+  - 仓库名、可见性（Public）、不勾选 README / .gitignore / License 三项，均由本人决定。
+
+---
+
 （后续协作记录继续往下追加）
