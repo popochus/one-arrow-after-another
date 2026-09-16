@@ -171,20 +171,23 @@ class Game:
             self._on_select_click(pos)
             return
 
-        # 游戏中和结算界面都有底部「主菜单」按钮
-        if renderer.secondary_button_rect().collidepoint(pos):
-            self.back_to_menu()
-            return
-
-        if self.state == self.STATE_RESULT:
-            if renderer.bottom_button_rect().collidepoint(pos):
+        # 底部按钮行（游戏中和结算界面共用，按钮数量随状态变化）
+        for (action, _text, _secondary), rect in zip(
+                renderer.bottom_actions(self), renderer.bottom_button_rects(self)):
+            if not rect.collidepoint(pos):
+                continue
+            if action == "menu":
+                self.back_to_menu()
+            elif action in ("restart", "replay"):
+                self.restart()
+            else:                       # "next"：下一关 / 再玩一次 / 失败重试
                 self.on_result_button()
             return
 
-        # ---- 游戏中 ----
-        if renderer.bottom_button_rect().collidepoint(pos):
-            self.restart()
+        if self.state == self.STATE_RESULT:
             return
+
+        # ---- 游戏中：点击棋盘 ----
 
         cell = renderer.cell_at(self.origin, pos, self.board.rows, self.board.cols)
         if cell is None:
@@ -249,8 +252,8 @@ class Game:
             self.hover = None
             return
         mouse = pygame.mouse.get_pos()
-        if renderer.bottom_button_rect().collidepoint(mouse) \
-                or renderer.secondary_button_rect().collidepoint(mouse):
+        if any(rect.collidepoint(mouse)
+               for rect in renderer.bottom_button_rects(self)):
             self.hover = None
             return
         self.hover = renderer.cell_at(

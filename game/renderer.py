@@ -60,29 +60,60 @@ def cell_at(origin, pos, rows, cols):
     return None
 
 
-def bottom_buttons():
-    """底部按钮行：左边次要「主菜单」，右边主操作。
+def bottom_actions(game):
+    """底部按钮行的内容：返回 [(动作键, 按钮文字, 是否次要按钮), ...]。
 
-    游戏中和结算界面共用这一行，只有主按钮的文字会随状态变化。
+    游戏中和失败时是两个按钮；通关结算时多一个「重玩本关」，共三个。
     """
-    total = C.SECONDARY_BUTTON_WIDTH + C.BUTTON_GAP + C.BUTTON_WIDTH
+    if game.state == game.STATE_PLAYING:
+        return [
+            ("menu", "主菜单", True),
+            ("restart", "重新开始", False),
+        ]
+    if game.result == "lose":
+        return [
+            ("menu", "主菜单", True),
+            ("restart", "重试本关", False),
+        ]
+    # 通关：无论还有没有下一关，都提供「重玩本关」
+    return [
+        ("menu", "主菜单", True),
+        ("replay", "重玩本关", True),
+        ("next", "下一关" if game.has_next_level else "再玩一次", False),
+    ]
+
+
+def bottom_button_rects(game):
+    """按当前状态算出底部按钮行的矩形列表，整行水平居中。"""
+    count = len(bottom_actions(game))
+    width = C.SECONDARY_BUTTON_WIDTH if count == 2 else C.BUTTON_COMPACT_WIDTH
+    total = width * count + C.BUTTON_GAP * (count - 1)
+    x0 = (C.WINDOW_WIDTH - total) // 2
+    return [
+        pygame.Rect(x0 + i * (width + C.BUTTON_GAP), C.BUTTON_TOP,
+                    width, C.BUTTON_HEIGHT)
+        for i in range(count)
+    ]
+
+
+def bottom_buttons():
+    """「主菜单 + 主操作」两按钮布局，供静态场景（游戏中）使用。"""
+    width = C.SECONDARY_BUTTON_WIDTH
+    total = width + C.BUTTON_GAP + C.BUTTON_WIDTH
     x = (C.WINDOW_WIDTH - total) // 2
-    secondary = pygame.Rect(
-        x, C.BUTTON_TOP, C.SECONDARY_BUTTON_WIDTH, C.BUTTON_HEIGHT)
+    secondary = pygame.Rect(x, C.BUTTON_TOP, width, C.BUTTON_HEIGHT)
     primary = pygame.Rect(
-        x + C.SECONDARY_BUTTON_WIDTH + C.BUTTON_GAP, C.BUTTON_TOP,
-        C.BUTTON_WIDTH, C.BUTTON_HEIGHT,
-    )
+        x + width + C.BUTTON_GAP, C.BUTTON_TOP, C.BUTTON_WIDTH, C.BUTTON_HEIGHT)
     return secondary, primary
 
 
 def secondary_button_rect():
-    """底部次要按钮：返回主菜单。"""
+    """底部次要按钮（主菜单）在「两按钮」布局下的位置。"""
     return bottom_buttons()[0]
 
 
 def bottom_button_rect():
-    """底部主按钮：重新开始 / 下一关 / 重试本关 / 再玩一次。"""
+    """底部主操作按钮在「两按钮」布局下的位置。"""
     return bottom_buttons()[1]
 
 
@@ -345,19 +376,10 @@ def _draw_toast(surface, game):
 
 
 def _draw_bottom_button(surface, game):
-    """底部按钮行：左「主菜单」，右主操作（文字随状态变化）。"""
-    secondary, primary = bottom_buttons()
-    draw_button(surface, secondary, "主菜单", secondary=True)
-
-    if game.state == game.STATE_PLAYING:
-        text = "重新开始"
-    elif game.result == "lose":
-        text = "重试本关"
-    elif game.has_next_level:
-        text = "下一关"
-    else:
-        text = "再玩一次"
-    draw_button(surface, primary, text)
+    """底部按钮行，按钮的内容与数量都随状态变化。"""
+    for (_, text, secondary), rect in zip(
+            bottom_actions(game), bottom_button_rects(game)):
+        draw_button(surface, rect, text, secondary=secondary)
 
 
 def _draw_result(surface, game):

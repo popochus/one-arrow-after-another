@@ -24,7 +24,8 @@ BOARD_PADDING = 12          # 棋盘底板相对网格向外扩出的留白
 BUTTON_TOP = 1030           # 底部按钮行：左「主菜单」+ 右主操作（重新开始 / 下一关 / 重试）
 BUTTON_WIDTH = 240          # 主操作按钮宽度
 SECONDARY_BUTTON_WIDTH = 240    # 次要按钮（主菜单）宽度
-BUTTON_GAP = 40             # 两个按钮之间的间距
+BUTTON_COMPACT_WIDTH = 200  # 通关结算时一行三个按钮，用较窄的宽度才排得下
+BUTTON_GAP = 40             # 按钮之间的间距
 BUTTON_HEIGHT = 88
 
 # ---------------- 开始界面 ----------------
@@ -78,7 +79,7 @@ COLOR_CARD_DONE         = (44, 168, 108)    # 已通关标记
 COLOR_TOAST_BG      = (255, 236, 235)
 
 # ---------------- 动画 ----------------
-FLY_OUT_DURATION = 0.40     # 飞出动画时长（秒）
+FLY_OUT_DURATION = 0.55     # 飞出动画时长（秒）。原为 0.40，试玩反馈偏快故放慢。
 SHAKE_DURATION   = 0.34     # 碰撞晃动时长（秒）
 SHAKE_AMPLITUDE  = 9        # 晃动幅度（像素）
 TOAST_DURATION   = 1.00     # 碰撞文字提示停留时长（秒）
