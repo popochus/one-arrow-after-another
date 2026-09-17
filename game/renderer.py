@@ -8,6 +8,7 @@ import math
 import pygame
 
 from . import config as C
+from . import view
 from .board import DIRECTIONS
 
 # 箭头基准形状以「朝右」定义，再按方向做 90° 整数倍旋转。
@@ -117,6 +118,36 @@ def bottom_button_rect():
     return bottom_buttons()[1]
 
 
+def assist_actions(game):
+    """辅助按钮行的内容：返回 [(动作键, 按钮文字, 是否禁用), ...]。
+
+    只在游戏进行中出现；已经无可撤销的步骤时，「撤销」置灰不可点。
+    胜负判定后（动画播完前）两个按钮一起置灰，与锁死的棋盘保持一致。
+    """
+    if game.state != game.STATE_PLAYING:
+        return []
+    locked = game.result is not None
+    return [
+        ("undo", "撤销", locked or not game.can_undo),
+        ("hint", "提示", locked),
+    ]
+
+
+def assist_button_rects(game):
+    """辅助按钮行的矩形列表，整行水平居中。"""
+    count = len(assist_actions(game))
+    if count == 0:
+        return []
+    total = count * C.ASSIST_BUTTON_WIDTH + (count - 1) * C.ASSIST_BUTTON_GAP
+    x0 = (C.WINDOW_WIDTH - total) // 2
+    return [
+        pygame.Rect(x0 + i * (C.ASSIST_BUTTON_WIDTH + C.ASSIST_BUTTON_GAP),
+                    C.ASSIST_BUTTON_TOP, C.ASSIST_BUTTON_WIDTH,
+                    C.ASSIST_BUTTON_HEIGHT)
+        for i in range(count)
+    ]
+
+
 def menu_button_rect():
     """开始界面的「开始游戏」按钮（点击后进入关卡选择界面）。"""
     return pygame.Rect(
@@ -168,15 +199,34 @@ def draw_arrow(surface, center, direction, color):
     pygame.draw.polygon(surface, color, points)
 
 
-def draw_button(surface, rect, text, secondary=False):
+def _draw_hint_glow(surface, center, pulse):
+    """提示箭头外圈的呼吸光晕，pulse 取 0~1。"""
+    radius = int(C.CELL_SIZE * (0.36 + 0.05 * pulse))
+    size = radius * 2 + 14
+    layer = pygame.Surface((size, size), pygame.SRCALPHA)
+    cx = cy = size // 2
+    pygame.draw.circle(layer, (*C.COLOR_ARROW_HINT, 26), (cx, cy), radius)
+    pygame.draw.circle(layer, (*C.COLOR_ARROW_HINT, int(70 + 85 * pulse)),
+                       (cx, cy), radius, width=5)
+    surface.blit(layer, layer.get_rect(center=center))
+
+
+def draw_button(surface, rect, text, secondary=False, disabled=False):
     """统一样式的按钮，鼠标悬停时颜色变化。
 
-    secondary=True 画成次要按钮（白底描边），用于「主菜单」这类非主操作。
+    secondary=True 画成次要按钮（白底描边），用于「主菜单」这类非主操作；
+    disabled=True 画成灰色且不响应悬停，表示当前不可用（如无历史时的「撤销」）。
     """
-    hovered = rect.collidepoint(pygame.mouse.get_pos())
+    # 取逻辑画布坐标而非窗口坐标：窗口被缩放过时，两者差一个比例。
+    hovered = rect.collidepoint(view.mouse_pos()) and not disabled
     radius = rect.height // 3
 
-    if secondary:
+    if disabled:
+        pygame.draw.rect(surface, C.COLOR_BTN_DISABLED_BG, rect, border_radius=radius)
+        pygame.draw.rect(surface, C.COLOR_BTN_DISABLED_BORDER, rect,
+                         width=2, border_radius=radius)
+        label = C.get_font(26).render(text, True, C.COLOR_BTN_DISABLED_TEXT)
+    elif secondary:
         color = C.COLOR_BTN_2ND_HOVER if hovered else C.COLOR_BTN_2ND
         pygame.draw.rect(surface, color, rect, border_radius=radius)
         pygame.draw.rect(surface, C.COLOR_BTN_2ND_BORDER, rect,
@@ -245,7 +295,7 @@ def _draw_select(surface, game):
 def _draw_level_card(surface, game, index, level):
     """单张关卡卡片：序号 + 主题名 + 状态（已通关 / 箭头数）。"""
     rect = select_card_rect(index)
-    hovered = rect.collidepoint(pygame.mouse.get_pos())
+    hovered = rect.collidepoint(view.mouse_pos())
     cleared = index in game.cleared_levels
 
     pygame.draw.rect(surface, C.COLOR_CARD_BG_HOVER if hovered else C.COLOR_CARD_BG,
@@ -330,6 +380,12 @@ def _draw_arrows(surface, game):
         if game.hover == (arrow.row, arrow.col):
             color = C.COLOR_ARROW_HOVER
 
+        if game.hint_cell == (arrow.row, arrow.col):
+            # 提示高亮：在常态箭头与琥珀色之间脉动，外面套一圈同步呼吸的光晕
+            pulse = 0.5 + 0.5 * math.sin(game.hint_elapsed * 9.0)
+            color = lerp_color(C.COLOR_ARROW, C.COLOR_ARROW_HINT, pulse)
+            _draw_hint_glow(surface, center, pulse)
+
         elapsed = game.shake_anims.get((arrow.row, arrow.col))
         if elapsed is not None:
             # 碰撞反馈：先变色（蓝 -> 红 -> 蓝），再沿朝向前后抖动
@@ -352,23 +408,31 @@ def _draw_arrows(surface, game):
 
 
 def _draw_toast(surface, game):
-    """碰撞时的文字提示，出现在棋盘上方并淡出。"""
+    """棋盘上方的浮动提示，出现后淡出。
+
+    两种类型：碰撞提示用红色（危险），撤销这类中性提示用蓝色。
+    """
     if not game.toast:
         return
 
-    text, elapsed = game.toast
+    text, elapsed, kind = game.toast
     t = elapsed / C.TOAST_DURATION
     if t >= 1.0:
         return
 
-    label = C.get_font(24).render(text, True, C.COLOR_DANGER)
+    if kind == "info":
+        bg, fg = C.COLOR_TOAST_INFO_BG, C.COLOR_TOAST_INFO_TEXT
+    else:
+        bg, fg = C.COLOR_TOAST_BG, C.COLOR_DANGER
+
+    label = C.get_font(24).render(text, True, fg)
     pad_x, pad_y = 24, 14
     card = pygame.Surface(
         (label.get_width() + pad_x * 2, label.get_height() + pad_y * 2),
         pygame.SRCALPHA,
     )
     alpha = int(235 * (1 - t ** 3))
-    card.fill((*C.COLOR_TOAST_BG, max(alpha, 0)))
+    card.fill((*bg, max(alpha, 0)))
     card.blit(label, (pad_x, pad_y))
 
     rect = card.get_rect(center=(C.WINDOW_WIDTH // 2, game.origin[1] - 30))
@@ -380,6 +444,13 @@ def _draw_bottom_button(surface, game):
     for (_, text, secondary), rect in zip(
             bottom_actions(game), bottom_button_rects(game)):
         draw_button(surface, rect, text, secondary=secondary)
+
+
+def _draw_assist_button(surface, game):
+    """辅助按钮行（撤销 / 提示），只在游戏进行中绘制。"""
+    for (_, text, disabled), rect in zip(
+            assist_actions(game), assist_button_rects(game)):
+        draw_button(surface, rect, text, secondary=True, disabled=disabled)
 
 
 def _draw_result(surface, game):
@@ -428,4 +499,5 @@ def render(surface, game):
     _draw_board(surface, game)
     _draw_arrows(surface, game)
     _draw_toast(surface, game)
+    _draw_assist_button(surface, game)
     _draw_bottom_button(surface, game)

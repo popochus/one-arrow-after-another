@@ -6,15 +6,22 @@
     playing 游戏界面，处理棋盘点击、动画、失误计数
     result  结果界面，显示通关 / 失败，并提供进入下一关或重试的按钮
 
+游戏中还提供两个辅助功能（只在 playing 状态下出现）：
+    撤销    退回上一步——飞出的箭头放回原位，失误计数一并退还；
+    提示    高亮一个当前确实可以点掉的箭头，卡住时的出路。
+
 返回开始界面的两条路：按 Esc，或点底部的「主菜单」按钮。
 """
 
 import pygame
 
+from . import audio
 from . import config as C
 from . import renderer
+from . import view
 from .board import DIRECTIONS
 from .levels import load_levels
+from .solver import hint as find_hint
 
 
 class FlyOut:
@@ -47,8 +54,12 @@ class Game:
     STATE_PLAYING = "playing"
     STATE_RESULT = "result"
 
-    def __init__(self, screen):
+    def __init__(self, screen, window=None):
+        # screen 是固定 720x1280 的逻辑画布，界面代码只认它的坐标系；
+        # window 是真实窗口。两者不同时，每帧由 view.present() 缩放呈现。
+        # 自动化测试与录制脚本只传 screen，此时 window 即 screen，行为与从前一致。
         self.screen = screen
+        self.window = window if window is not None else screen
         self.clock = pygame.time.Clock()
         self.levels = load_levels()
 
@@ -80,6 +91,11 @@ class Game:
         """是否已经通关过至少一关（决定开始界面要不要显示「继续游戏」）。"""
         return self.resume_level > 0
 
+    @property
+    def can_undo(self):
+        """当前是否有可以撤销的步骤。"""
+        return bool(self.history)
+
     # ---------------- 关卡控制 ----------------
 
     def start_level(self, index):
@@ -92,10 +108,13 @@ class Game:
         self.mistakes = 0
         self.fly_anims = []
         self.shake_anims = {}       # (row, col) -> 已播放时长
-        self.toast = None           # [文字, 已播放时长]
+        self.toast = None           # [文字, 已播放时长, 类型]
         self.result = None
         self.hover = None
         self.finish_delay = 0.0
+        self.history = []           # 每步有效点击前压入的 (布局快照, 失误数)
+        self.hint_cell = None       # 正在高亮的提示格
+        self.hint_elapsed = 0.0
         self.state = self.STATE_PLAYING
 
     def start_game(self):
@@ -113,6 +132,7 @@ class Game:
         """
         self.state = self.STATE_MENU
         self.hover = None
+        self.hint_cell = None
 
     def on_result_button(self):
         """结果界面主按钮：失败重试，通关则进入下一关或重开一局。"""
@@ -122,6 +142,51 @@ class Game:
             self.start_level(self.level_index + 1)
         else:
             self.start_game()
+
+    # ---------------- 辅助功能 ----------------
+
+    def undo(self):
+        """撤销上一步点击。
+
+        退回的是"上一步点击之前"的完整状态：飞出去的箭头回到原位，
+        若是点错消耗掉的失误也一并退还——所以撤销本身不消耗失误次数。
+        它的意义在于让玩家敢试错：试一个方向，不对就退回来。
+        """
+        if not self.history:
+            return False
+
+        snapshot, mistakes = self.history.pop()
+        self.board.restore(snapshot)
+        self.mistakes = mistakes
+
+        # 上一步相关的动画与判定一并作废，
+        # 否则会出现"棋盘已经退回去、箭头却还在飞"这类错位。
+        self.fly_anims.clear()
+        self.shake_anims.clear()
+        self.hint_cell = None
+        self.hint_elapsed = 0.0
+        self.result = None
+        self.finish_delay = 0.0
+        self.toast = ["已撤销上一步", 0.0, "info"]
+        audio.play("undo")
+        return True
+
+    def show_hint(self):
+        """高亮一个当前可以点掉的箭头。
+
+        直接复用求解器的 hint()：它返回当前局面下所有能飞出的箭头。
+        在本关卡的规则下（消除只会让障碍变少、不会制造新障碍），
+        只要关卡本身可解，任何时刻都至少有一个箭头可以飞出去，
+        所以提示一定有答案，不存在"提示不出来"的情况。
+        """
+        candidates = find_hint(self.board)
+        if not candidates:
+            return False
+
+        arrow = candidates[0]
+        self.hint_cell = (arrow.row, arrow.col)
+        self.hint_elapsed = 0.0
+        return True
 
     # ---------------- 主循环 ----------------
 
@@ -147,6 +212,10 @@ class Game:
                 elif event.key == pygame.K_r and self.state in (
                         self.STATE_PLAYING, self.STATE_RESULT):
                     self.restart()
+                elif event.key == pygame.K_u and self.state == self.STATE_PLAYING:
+                    self.undo()
+                elif event.key == pygame.K_h and self.state == self.STATE_PLAYING:
+                    self.show_hint()
                 elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
                     if self.state == self.STATE_MENU:
                         self.state = self.STATE_SELECT
@@ -156,7 +225,9 @@ class Game:
                         self.on_result_button()
 
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                self.on_click(event.pos)
+                # event.pos 是窗口坐标；窗口被缩放过时要换算回逻辑画布坐标，
+                # 否则点击位置会整体偏移，越靠右下偏得越多。
+                self.on_click(view.to_logical(event.pos))
 
     def on_click(self, pos):
         """把一次鼠标左键点击分发到当前状态对应的处理逻辑。"""
@@ -187,6 +258,26 @@ class Game:
         if self.state == self.STATE_RESULT:
             return
 
+        # 胜负一旦判定，棋盘与辅助按钮立即全部锁死。
+        #
+        # 从判定到弹出结算界面之间还有一段动画延迟（finish_delay），这期间状态仍
+        # 是 PLAYING。若继续接受点击，快速连点会把 finish_delay 一遍遍重置回满值，
+        # 倒计时永远走不完，结算界面就再也不出现（失误数还会一路涨过上限）。
+        # 更糟的是失败后继续点掉剩余箭头会命中 remaining == 0，把结果翻成胜利。
+        if self.result is not None:
+            return
+
+        # 辅助按钮行（撤销 / 提示），只在游戏进行中出现
+        for (action, _text, _disabled), rect in zip(
+                renderer.assist_actions(self), renderer.assist_button_rects(self)):
+            if not rect.collidepoint(pos):
+                continue
+            if action == "undo":
+                self.undo()
+            elif action == "hint":
+                self.show_hint()
+            return
+
         # ---- 游戏中：点击棋盘 ----
 
         cell = renderer.cell_at(self.origin, pos, self.board.rows, self.board.cols)
@@ -197,6 +288,11 @@ class Game:
         if arrow is None or cell in self.shake_anims:
             return        # 空格，或碰撞动画尚未播完（防连点）
 
+        # 记下这一步之前的状态，供「撤销」回退
+        self.history.append((self.board.snapshot(), self.mistakes))
+        # 玩家自己动手了，先前的提示可能已经失效，先收起来
+        self.hint_cell = None
+
         if self.board.can_fly_out(arrow):
             self.board.remove(arrow)
             distance = (max(self.board.rows, self.board.cols) + 1) * C.CELL_SIZE
@@ -205,10 +301,16 @@ class Game:
                 self.result = "win"
                 self.cleared_levels.add(self.level_index)   # 记录进度，供「继续游戏」使用
                 self.finish_delay = C.FLY_OUT_DURATION + C.FINISH_DELAY
+                # 最后一箭只响通关音。它的琶音本身已经表达了"完成了"，
+                # 再叠一个飞出音只会让两段声音糊在一起。
+                audio.play("win")
+            else:
+                audio.play("fly")
         else:
             self.mistakes += 1
             self.shake_anims[cell] = 0.0
-            self.toast = ["前方有箭头挡路，换一个试试", 0.0]
+            self.toast = ["前方有箭头挡路，换一个试试", 0.0, "danger"]
+            audio.play("hit")
             if self.mistakes >= self.MAX_MISTAKES:
                 self.result = "lose"
                 self.finish_delay = C.SHAKE_DURATION + C.FINISH_DELAY
@@ -240,6 +342,12 @@ class Game:
             if self.toast[1] >= C.TOAST_DURATION:
                 self.toast = None
 
+        # 提示高亮到时间自动消失，不需要玩家手动关掉
+        if self.hint_cell is not None:
+            self.hint_elapsed += dt
+            if self.hint_elapsed >= C.HINT_DURATION:
+                self.hint_cell = None
+
         # 最后一个箭头飞出（或碰撞动画结束）后，稍等片刻再弹出结算界面
         if self.result is not None and self.state == self.STATE_PLAYING:
             self.finish_delay -= dt
@@ -248,12 +356,18 @@ class Game:
 
     def _update_hover(self):
         """只有游戏中、且鼠标不在按钮上时才高亮格子。"""
-        if self.state != self.STATE_PLAYING:
+        # 胜负已定时棋盘不再响应点击，高亮也要跟着撤掉，
+        # 否则会出现"格子亮着、点了却没反应"的错觉。
+        if self.state != self.STATE_PLAYING or self.result is not None:
             self.hover = None
             return
-        mouse = pygame.mouse.get_pos()
+        mouse = view.mouse_pos()
         if any(rect.collidepoint(mouse)
                for rect in renderer.bottom_button_rects(self)):
+            self.hover = None
+            return
+        if any(rect.collidepoint(mouse)
+               for rect in renderer.assist_button_rects(self)):
             self.hover = None
             return
         self.hover = renderer.cell_at(
@@ -261,4 +375,4 @@ class Game:
 
     def draw(self):
         renderer.render(self.screen, self)
-        pygame.display.flip()
+        view.present(self.window, self.screen)

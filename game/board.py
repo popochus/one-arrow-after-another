@@ -103,6 +103,20 @@ class Board:
         """恢复为初始布局。"""
         self._arrows = dict(self._initial)
 
+    # ---------------- 快照（供「撤销」使用）----------------
+
+    def snapshot(self):
+        """当前布局的快照。
+
+        棋盘上的箭头最多十几个，直接复制一份字典就够了，
+        不需要为撤销设计更复杂的状态表示。
+        """
+        return dict(self._arrows)
+
+    def restore(self, snapshot):
+        """把棋盘恢复到某个快照。"""
+        self._arrows = dict(snapshot)
+
 
 def parse_level(text):
     """把字符画关卡解析成 (rows, cols, arrows)。

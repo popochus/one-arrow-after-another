@@ -28,6 +28,14 @@ BUTTON_COMPACT_WIDTH = 200  # 通关结算时一行三个按钮，用较窄的�
 BUTTON_GAP = 40             # 按钮之间的间距
 BUTTON_HEIGHT = 88
 
+# ---------------- 辅助按钮（撤销 / 提示）----------------
+# 只在游戏进行中出现，排在底部主操作按钮行的上方，
+# 与「主菜单 / 重新开始」这类流程操作分开，避免一屏里挤四个按钮。
+ASSIST_BUTTON_TOP = 944     # 辅助按钮行的上边界
+ASSIST_BUTTON_WIDTH = 170
+ASSIST_BUTTON_HEIGHT = 62
+ASSIST_BUTTON_GAP = 32
+
 # ---------------- 开始界面 ----------------
 MENU_TITLE_Y = 400          # 标题中心
 MENU_SUBTITLE_Y = 488       # 一句话玩法说明
@@ -57,6 +65,7 @@ COLOR_TEXT_MUTED    = (132, 140, 154)
 COLOR_ARROW         = (56, 108, 222)    # 箭头常态
 COLOR_ARROW_HOVER   = (96, 146, 246)    # 悬停高亮
 COLOR_ARROW_BLOCKED = (226, 74, 66)     # 碰撞瞬间
+COLOR_ARROW_HINT    = (240, 154, 24)    # 提示高亮（琥珀色）：与箭头的蓝、碰撞的红都能区分
 COLOR_DANGER        = (226, 74, 66)
 COLOR_SUCCESS       = (44, 168, 108)
 COLOR_BTN           = (56, 108, 222)
@@ -66,6 +75,9 @@ COLOR_BTN_2ND       = (255, 255, 255)   # 次要按钮（主菜单 / 继续游�
 COLOR_BTN_2ND_HOVER = (236, 241, 251)
 COLOR_BTN_2ND_BORDER = (203, 212, 228)
 COLOR_BTN_2ND_TEXT  = (86, 96, 116)
+COLOR_BTN_DISABLED_BG     = (247, 248, 251)   # 暂不可用的按钮（如无历史时的「撤销」）
+COLOR_BTN_DISABLED_BORDER = (228, 233, 242)
+COLOR_BTN_DISABLED_TEXT   = (176, 184, 196)
 
 # ---------------- 配色（关卡选择卡片）----------------
 COLOR_CARD_BG           = (255, 255, 255)
@@ -76,7 +88,9 @@ COLOR_CARD_INDEX_BG     = (238, 243, 253)
 COLOR_CARD_INDEX_TEXT   = (56, 108, 222)
 COLOR_CARD_DONE         = (44, 168, 108)    # 已通关标记
 
-COLOR_TOAST_BG      = (255, 236, 235)
+COLOR_TOAST_BG        = (255, 236, 235)   # 碰撞提示（红）
+COLOR_TOAST_INFO_BG   = (232, 240, 255)   # 中性提示，如「已撤销上一步」
+COLOR_TOAST_INFO_TEXT = (56, 108, 222)
 
 # ---------------- 动画 ----------------
 FLY_OUT_DURATION = 0.55     # 飞出动画时长（秒）。原为 0.40，试玩反馈偏快故放慢。
@@ -84,6 +98,7 @@ SHAKE_DURATION   = 0.34     # 碰撞晃动时长（秒）
 SHAKE_AMPLITUDE  = 9        # 晃动幅度（像素）
 TOAST_DURATION   = 1.00     # 碰撞文字提示停留时长（秒）
 FINISH_DELAY     = 0.20     # 最后一个箭头消失后，再隔多久弹出结算界面
+HINT_DURATION    = 2.50     # 「提示」高亮的持续时长（秒）
 
 # ---------------- 中文字体 ----------------
 # pygame 自带字体不含中文字形，必须显式加载系统字体，否则中文会显示成方块。
