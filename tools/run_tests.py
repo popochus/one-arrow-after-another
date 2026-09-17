@@ -6,6 +6,16 @@
     T08        游戏中返回主菜单
     T09        关卡选择界面
     T10        继续游戏
+    T11        「重玩本关」按钮
+    T12        键盘 R 重新开始
+    T13 ~ T14  撤销（退回飞出的箭头 / 退回失误）
+    T15        提示
+    T16        无历史时撤销按钮置灰且点击无副作用
+    T17        键盘 U / H 快捷键
+    T18        窗口自适应缩放（屏幕放不下时等比缩小）
+    T19        四个界面渲染冒烟（含缩放呈现路径）
+    T20        音效合成与无声卡降级
+    T21        胜负判定后输入锁定（连点不会推迟结算）
 
 用法（项目根目录）：
     python tools/run_tests.py
@@ -32,7 +42,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import pygame                                            # noqa: E402
 
-from game import config, renderer                        # noqa: E402
+from game import audio, config, renderer, view        # noqa: E402
 from game.app import Game                                # noqa: E402
 from game.board import Arrow, Board, parse_level         # noqa: E402
 from game.solver import solve                            # noqa: E402
@@ -66,9 +76,42 @@ def check(case_id, title, expected, actual, passed):
     _RESULTS.append((case_id, title, expected, actual, passed))
 
 
+# 渲染冒烟测试用的哨兵色：先把画布涂成它，再看渲染有没有把它盖住。
+# 挑洋红是因为游戏配色里完全不含这种颜色，不会和任何界面元素撞色。
+_SENTINEL = (255, 0, 255)
+
+
+def sentinel_left(surface):
+    """渲染后仍残留哨兵色的像素占比。
+
+    先缩小再抽样，避免逐像素遍历整张 720x1280 的画布。
+    这里用最近邻的 transform.scale 而不是 smoothscale：
+    平滑插值会把洋红和邻近像素混成粉色，反而把"没画到"判成"画到了"。
+    """
+    tiny = pygame.transform.scale(surface, (60, 106))
+    hits = 0
+    for x in range(60):
+        for y in range(106):
+            r, g, b = tiny.get_at((x, y))[:3]
+            if r > 243 and g < 12 and b > 243:
+                hits += 1
+    return hits / (60 * 106)
+
+
 def click_cell(game, row, col):
     """把网格坐标换算成屏幕坐标后模拟一次鼠标点击。"""
     game.on_click(renderer.cell_center(game.origin, row, col))
+
+
+def assist_rect(game, action):
+    """取辅助按钮行（撤销 / 提示）里某个动作的矩形。"""
+    pairs = zip(renderer.assist_actions(game), renderer.assist_button_rects(game))
+    return next(rect for (key, _text, _disabled), rect in pairs if key == action)
+
+
+def first_flyable(game):
+    """当前局面下第一个确实能飞出的箭头（不依赖具体关卡布局）。"""
+    return next(a for a in game.board.arrows if game.board.can_fly_out(a))
 
 
 # ==================== 逻辑层：路径检测 ====================
@@ -372,6 +415,293 @@ def test_t12():
           in_play and in_result)
 
 
+def test_t13():
+    """T13（补充）撤销：把刚飞出的箭头放回原位。"""
+    game = new_game()
+    total = game.board.remaining
+    arrow = first_flyable(game)
+
+    click_cell(game, arrow.row, arrow.col)
+    flown = game.board.remaining == total - 1
+    game.update(1.0)                       # 让飞出动画播完，更接近真实节奏
+
+    game.on_click(assist_rect(game, "undo").center)
+    back = game.board.arrow_at(arrow.row, arrow.col)
+    restored = (game.board.remaining == total
+                and back is not None
+                and back.direction == arrow.direction
+                and game.mistakes == 0)
+
+    check("T13", "撤销已飞出的箭头",
+          "箭头回到原格，剩余数量与朝向都恢复",
+          f"飞出后剩余 {total - 1}；撤销后剩余 {game.board.remaining}，"
+          f"原格箭头{'已恢复' if back else '缺失'}",
+          flown and restored)
+
+
+def test_t14():
+    """T14（补充）撤销一次失误：失误计数退还，撤销本身不吃失误。"""
+    game = new_game()
+    blocked = next(a for a in game.board.arrows if not game.board.can_fly_out(a))
+
+    click_cell(game, blocked.row, blocked.col)
+    after_mistake = game.mistakes
+    game.update(1.0)
+
+    game.on_click(assist_rect(game, "undo").center)
+    refunded = (game.mistakes == 0 and game.board.remaining == game.arrow_total)
+
+    check("T14", "撤销一次失误",
+          "失误计数退还，且撤销这个动作本身不消耗失误",
+          f"点错后失误 {after_mistake}；撤销后失误 {game.mistakes}，"
+          f"剩余箭头 {game.board.remaining}/{game.arrow_total}",
+          after_mistake == 1 and refunded)
+
+
+def test_t15():
+    """T15（补充）提示：高亮的必须是当前真的能飞出的箭头。"""
+    game = new_game()
+    game.on_click(assist_rect(game, "hint").center)
+
+    cell = game.hint_cell
+    arrow = game.board.arrow_at(*cell) if cell else None
+    valid = arrow is not None and game.board.can_fly_out(arrow)
+
+    # 玩家按提示点掉它之后，提示应当收起，不能留在原地误导人
+    if valid:
+        click_cell(game, arrow.row, arrow.col)
+    cleared = game.hint_cell is None
+
+    check("T15", "提示功能",
+          "高亮一个当前确实能飞出的箭头，点掉后提示自动收起",
+          f"提示格 {cell}，该箭头可飞出={valid}，点击后提示已收起={cleared}",
+          valid and cleared)
+
+
+def test_t16():
+    """T16（补充）没有可撤销步骤时，撤销按钮禁用且点击无副作用。"""
+    game = new_game()
+    disabled = renderer.assist_actions(game)[0] == ("undo", "撤销", True)
+
+    before = (game.board.remaining, game.mistakes, game.state, game.level_index)
+    game.on_click(assist_rect(game, "undo").center)      # 按钮是灰的，仍模拟一次点击
+    after = (game.board.remaining, game.mistakes, game.state, game.level_index)
+
+    check("T16", "无历史时的「撤销」",
+          "按钮显示为禁用状态，点击后棋盘与失误计数都不变",
+          f"按钮禁用={disabled}；点击前后状态一致={before == after}",
+          disabled and before == after)
+
+
+def test_t17():
+    """T17（补充）键盘 U / H：撤销与提示的快捷键。"""
+    game = new_game()
+    arrow = first_flyable(game)
+    click_cell(game, arrow.row, arrow.col)
+    game.update(1.0)
+
+    pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_u))
+    game.handle_events()
+    undone = game.board.remaining == game.arrow_total
+
+    pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_h))
+    game.handle_events()
+    hinted = game.hint_cell is not None
+
+    check("T17", "键盘 U / H 快捷键",
+          "U 撤销上一步，H 给出提示",
+          f"U 撤销生效={undone}；H 提示生效={hinted}",
+          undone and hinted)
+
+
+def test_t18():
+    """T18（补充）窗口自适应：屏幕放得下就 1:1，放不下就等比缩小。"""
+    original = view._scale
+    try:
+        # 足够大的屏幕：保持 1:1，窗口即逻辑画布的原始尺寸
+        big_screen = (1920, 1440)
+        view.install(big_screen)
+        big_window = view.window_size()
+        stays_1to1 = big_window == (config.WINDOW_WIDTH, config.WINDOW_HEIGHT)
+
+        # 比窗口矮的屏幕（1080p 去掉任务栏就是 1032）：
+        # 应等比缩小，且窗口加上标题栏后仍完整落在屏幕内
+        small_screen = (1920, 1032)
+        view.install(small_screen)
+        small_window = view.window_size()
+        shrunk = small_window[1] < config.WINDOW_HEIGHT
+        aspect_kept = abs(small_window[0] / small_window[1]
+                          - config.WINDOW_WIDTH / config.WINDOW_HEIGHT) < 0.01
+        fits = small_window[1] + view._WINDOW_CHROME_HEIGHT <= small_screen[1]
+
+        # 坐标换算：窗口坐标换回逻辑坐标，往返误差不超过 1 像素
+        factor = view.scale()
+        back = view.to_logical((round(360 * factor), round(640 * factor)))
+        roundtrip = abs(back[0] - 360) <= 1 and abs(back[1] - 640) <= 1
+    finally:
+        view._scale = original
+
+    check("T18", "窗口自适应缩放",
+          "屏幕放得下时 1:1 显示；放不下时等比缩小，窗口加标题栏后仍在屏幕内",
+          f"大屏 {big_screen} -> 窗口 {big_window}，1:1={stays_1to1}；"
+          f"小屏 {small_screen} -> 窗口 {small_window}，缩小={shrunk}、"
+          f"宽高比不变={aspect_kept}、完整放得下={fits}；坐标往返准确={roundtrip}",
+          stays_1to1 and shrunk and aspect_kept and fits and roundtrip)
+
+
+def test_t19():
+    """T19（补充）渲染冒烟：四个界面各渲染一帧，缩放呈现路径同样可用。
+
+    这条用例是为了补上一个真实的漏网之鱼：在此之前测试只覆盖逻辑与点击链路，
+    renderer 的绘制函数一次都没被调用过——界面代码里引用了不存在的名字、
+    或者传递了错误的参数，测试全都发现不了。
+    """
+    game = Game(get_screen())
+
+    def shot():
+        """涂上哨兵色再渲染，渲染完还剩下多少哨兵色就说明有多少没画到。"""
+        surface = pygame.Surface((config.WINDOW_WIDTH, config.WINDOW_HEIGHT))
+        surface.fill(_SENTINEL)
+        renderer.render(surface, game)
+        return surface
+
+    screens = []
+    game.state = Game.STATE_MENU
+    screens.append(("开始界面", shot()))
+    game.state = Game.STATE_SELECT
+    screens.append(("选关界面", shot()))
+    game.start_level(0)
+    screens.append(("游戏界面", shot()))
+    game.result = "win"
+    game.state = Game.STATE_RESULT
+    screens.append(("结算界面", shot()))
+
+    blank = [name for name, surface in screens if sentinel_left(surface) > 0.02]
+    sizes_ok = all(surface.get_size() == (config.WINDOW_WIDTH, config.WINDOW_HEIGHT)
+                   for _name, surface in screens)
+
+    # 缩放呈现：窗口比画布小时也要能正常输出，而不是报错或尺寸不对
+    window = None
+    original = view._scale
+    try:
+        view.install((1920, 1032))
+        window = pygame.Surface(view.window_size())
+        view.present(window, screens[2][1])
+    finally:
+        view._scale = original
+    present_ok = (window is not None
+                  and window.get_size() != screens[2][1].get_size())
+
+    check("T19", "四个界面渲染冒烟（含缩放呈现）",
+          "开始 / 选关 / 游戏 / 结算都能完整渲染一帧，缩放呈现也不报错",
+          f"没画满的界面={blank or '无'}；画布尺寸正确={sizes_ok}；"
+          f"缩放后窗口尺寸={window.get_size() if window else '未生成'}，正常={present_ok}",
+          not blank and sizes_ok and present_ok)
+
+
+def test_t20():
+    """T20（补充）音效：波形合成、播放，以及没有音频设备时的静默降级。
+
+    测试跑在 SDL 的 dummy 音频驱动上，所以不会真的发出声音。
+    """
+    started = audio.init()
+    expected = ("fly", "hit", "undo", "win")
+    synthesized = audio.loaded() == expected
+
+    # 四个音效都应当可以播放（dummy 驱动下 play() 也会如实返回结果）
+    played = all(audio.play(name) for name in expected) if synthesized else False
+
+    # 降级路径：模拟这台机器没有声卡，播放应变成空操作而不是抛异常
+    skipped = False
+    try:
+        audio.shutdown()
+        skipped = (not audio.enabled()) and audio.play("fly") is False
+    finally:
+        audio.init()          # 恢复，避免影响后续用例
+
+    check("T20", "音效合成与无声卡降级",
+          "四个音效都能合成并播放；没有音频设备时播放变成空操作、不报错",
+          f"初始化={started}；已合成={list(audio.loaded())}；全部可播放={played}；"
+          f"无声卡时静默跳过={skipped}",
+          started and synthesized and played and skipped)
+
+
+def test_t21():
+    """T21（补充）胜负判定后立即锁死输入。
+
+    用例来自真实试玩反馈：失误数显示成 11/3，结算界面始终不出现，只要点得够快。
+    根因是判定到弹出结算之间还有一段动画延迟（finish_delay），这期间状态仍是
+    「游戏中」，每次误点都把倒计时重置回满值，永远走不完。
+
+    顺带覆盖同源的另一个隐患：判定失败后把剩余箭头点光，会命中 remaining == 0
+    的分支，把已经确定的失败改写成胜利。
+
+    用时间步区分两段：判定前用略大于晃动时长的大步长，保证每帧都点得动；
+    判定后用细小步长逼近真实连点频率，专门冲击那段延迟窗口。
+    """
+    coarse = 0.35        # 略大于晃动时长（0.34 秒），每帧都能再次点到同一格
+    fine = 0.02          # 判定之后的连点，模拟玩家高频点击
+
+    def hittable(game):
+        """当前点下去必然失误、且不在晃动保护中的箭头。"""
+        return [a for a in game.board.arrows
+                if not game.board.can_fly_out(a)
+                and (a.row, a.col) not in game.shake_anims]
+
+    def spam(game, seconds, step):
+        """按给定步长连点，持续 seconds 秒。"""
+        spent = 0.0
+        while spent < seconds:
+            pool = hittable(game)
+            if pool:
+                arrow = pool[0]
+                game.on_click(
+                    renderer.cell_center(game.origin, arrow.row, arrow.col))
+            game.update(step)
+            spent += step
+
+    # ---- 判定前：连点直到失误达上限 ----
+    game = new_game()
+    spam(game, 2.0, coarse)
+    reached = game.result == "lose" and game.mistakes == game.MAX_MISTAKES
+    mistakes_at_verdict = game.mistakes
+
+    # ---- 判定后：继续高频连点 4 秒 ----
+    spam(game, 4.0, fine)
+    locked_ok = (game.mistakes == mistakes_at_verdict
+                 and game.result == "lose"
+                 and game.state == game.STATE_RESULT)
+
+    # ---- 通关后连点，胜负同样不该被改写 ----
+    other = new_game()
+    for arrow in solve(other.board):
+        other.on_click(renderer.cell_center(other.origin, arrow.row, arrow.col))
+        other.update(0.7)
+    won = other.result == "win"
+    spam(other, 4.0, fine)
+    win_kept = won and other.result == "win" and other.mistakes == 0
+
+    # ---- 结算界面的按钮必须仍然可用（锁定不能连按钮一起锁死）----
+    third = new_game()
+    spam(third, 2.0, coarse)
+    buttons = list(zip(renderer.bottom_actions(third),
+                       renderer.bottom_button_rects(third)))
+    retry = next(rect for (action, _text, _secondary), rect in buttons
+                 if action == "restart")
+    third.on_click(retry.center)
+    retry_ok = (third.state == Game.STATE_PLAYING
+                and third.result is None and third.mistakes == 0)
+
+    check("T21", "胜负判定后输入锁定",
+          "判定后继续快速连点：结算照常弹出、失误数不再增长、胜负不被改写、"
+          "结算按钮仍然可用",
+          f"判定时失误={mistakes_at_verdict}/{game.MAX_MISTAKES}，"
+          f"连点 4 秒后失误={game.mistakes}、结果={game.result}、状态={game.state}；"
+          f"通关后连点结果={other.result}、失误={other.mistakes}；"
+          f"「重试本关」可重开={retry_ok}",
+          reached and locked_ok and win_kept and retry_ok)
+
+
 # ==================== 报告输出 ====================
 
 # 作业第 5 节点名要求的六项测试，单独成表，方便直接贴进博客
@@ -452,6 +782,15 @@ def main():
     test_t10()
     test_t11()
     test_t12()
+    test_t13()
+    test_t14()
+    test_t15()
+    test_t16()
+    test_t17()
+    test_t18()
+    test_t19()
+    test_t20()
+    test_t21()
 
     width = 78
     print("=" * width)
