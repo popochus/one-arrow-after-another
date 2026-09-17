@@ -16,6 +16,10 @@
     T19        四个界面渲染冒烟（含缩放呈现路径）
     T20        音效合成与无声卡降级
     T21        胜负判定后输入锁定（连点不会推迟结算）
+    T22        计时（游戏中走表、判定后定格、重开归零）
+    T23        星级评价（由失误次数 + 提示次数决定）
+    T24        得分（失误与用时共同决定，含保底）
+    T25        判定后键盘 U / H 同样失效
 
 用法（项目根目录）：
     python tools/run_tests.py
@@ -702,6 +706,151 @@ def test_t21():
           reached and locked_ok and win_kept and retry_ok)
 
 
+def graded_game(mistakes=0, hints=0, seconds=0.0, level_index=0):
+    """构造一个"刚通关"的局面，直接给定时长、失误与提示次数。
+
+    评级只看这几个量，逐格点击打通一关太慢；直接设定更明确，
+    也让"超时 15 秒"这类边界值可以精确构造。
+    """
+    game = Game(get_screen())
+    game.start_level(level_index)
+    game.level_time = seconds
+    game.mistakes = mistakes
+    game.hint_count = hints
+    game._record_result()
+    return game
+
+
+def test_t22():
+    """T22（补充）计时：只在游戏进行中走表，胜负判定即定格。"""
+    game = new_game()
+    zero_at_start = game.level_time == 0.0
+    for _ in range(30):
+        game.update(0.1)
+    ticking = abs(game.elapsed - 3.0) < 1e-6
+
+    game.back_to_menu()
+    for _ in range(10):
+        game.update(0.1)
+    paused_in_menu = abs(game.elapsed - 3.0) < 1e-6
+
+    game = new_game()
+    for arrow in solve(game.board):
+        click_cell(game, arrow.row, arrow.col)
+        game.update(0.7)
+    frozen_at = game.elapsed
+    game.update(5.0)
+    frozen = game.elapsed == frozen_at
+
+    game.restart()
+    reset = game.level_time == 0.0
+
+    check("T22", "计时系统",
+          "开局为 0；游戏进行中累加；回到开始界面或胜负判定后停表；重开归零",
+          f"开局={zero_at_start}；走表 3 秒={ticking}；"
+          f"回到开始界面后停表={paused_in_menu}；"
+          f"判定后定格在 {frozen_at:.1f} 秒={frozen}；重开归零={reset}",
+          zero_at_start and ticking and paused_in_menu and frozen and reset)
+
+
+def test_t23():
+    """T23（补充）星级评价：由「失误次数 + 提示次数」决定。
+
+    撤销不计入其中——它退还的是失误计数，属于"走错了退回来"的容错机制；
+    而提示是主动向游戏要答案，所以计入惩罚。
+    """
+    cases = [(0, 0, 3), (1, 0, 2), (0, 1, 2), (1, 1, 1), (2, 0, 1), (2, 3, 1)]
+    got = []
+    stars_ok = True
+    for mistakes, hints, want in cases:
+        game = graded_game(mistakes=mistakes, hints=hints)
+        got.append(game.level_stars)
+        stars_ok = stars_ok and game.level_stars == want
+
+    game = new_game()
+    game.show_hint()
+    game.undo()
+    undo_ok = game.hint_count == 1 and game.level_stars == 2
+
+    check("T23", "星级评价（失误 + 提示）",
+          "惩罚点数 0 → 3 星，1 → 2 星，2 及以上 → 1 星；最低 1 星；"
+          "提示计入惩罚，撤销不计入",
+          "失误+提示 " + "、".join(f"{m}+{h}→{s}星"
+                                   for (m, h, _), s in zip(cases, got))
+          + f"；用一次提示后撤销，仍为 {game.level_stars} 星、提示次数 {game.hint_count}",
+          stars_ok and undo_ok)
+
+
+def test_t24():
+    """T24（补充）得分：失误与用时共同决定，且有保底。"""
+    full = graded_game().level_score == config.SCORE_BASE
+    one_mistake = (graded_game(mistakes=1).level_score
+                   == config.SCORE_BASE - config.SCORE_PER_MISTAKE)
+
+    # 第 1 关 8 个箭头，参考时长 8 × 5 = 40 秒；用 55 秒即超时 15 秒
+    over = graded_game(seconds=55.0)
+    overtime_ok = (over.level_score
+                   == config.SCORE_BASE - 15 * config.SCORE_PER_SECOND)
+
+    floored = (graded_game(seconds=200.0, mistakes=2).level_score
+               == config.SCORE_MIN)
+
+    # 提示只降星、不扣分
+    hinted = graded_game(hints=3)
+    hint_free = (hinted.level_score == config.SCORE_BASE
+                 and hinted.level_stars == 1)
+
+    first, last = Game(get_screen()), Game(get_screen())
+    first.start_level(0)
+    last.start_level(len(first.levels) - 1)
+    scaled = (first.reference_time == first.arrow_total * config.SECONDS_PER_ARROW
+              and last.reference_time > first.reference_time)
+
+    check("T24", "得分（失误与用时）",
+          f"满分 {config.SCORE_BASE}；每次失误 -{config.SCORE_PER_MISTAKE}；"
+          f"超出参考时长后每秒 -{config.SCORE_PER_SECOND}，"
+          f"保底 {config.SCORE_MIN} 分；提示只降星不扣分",
+          f"满分={full}；1 次失误={one_mistake}；超时 15 秒→{over.level_score} 分"
+          f"={overtime_ok}；扣到下限保底={floored}；"
+          f"3 次提示仍 {hinted.level_score} 分/{hinted.level_stars} 星={hint_free}；"
+          f"参考时长随箭头数缩放={scaled}",
+          full and one_mistake and overtime_ok and floored and hint_free and scaled)
+
+
+def test_t25():
+    """T25（补充）判定后键盘 U / H 也必须失效。
+
+    鼠标路径在 on_click 里已被 result 拦下，键盘路径原先没有这层守卫：
+    判定失败后按 U 能把 result 清掉接着玩（"失误用尽即失败"形同虚设），
+    按 H 则会多记一次提示、白白拉低星级。两条路径的行为必须一致。
+    """
+    def press(game, key):
+        pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=key))
+        game.handle_events()
+
+    game = new_game()
+    game.mistakes = game.MAX_MISTAKES - 1
+    blocked = next(a for a in game.board.arrows if not game.board.can_fly_out(a))
+    click_cell(game, blocked.row, blocked.col)
+    lost = game.result == "lose"
+
+    press(game, pygame.K_u)
+    undo_blocked = game.result == "lose"
+    press(game, pygame.K_h)
+    hint_blocked = game.hint_count == 0
+
+    live = new_game()
+    press(live, pygame.K_h)
+    live_ok = live.hint_count == 1
+
+    check("T25", "判定后键盘 U / H 失效",
+          "胜负判定后按 U 不能撤销翻盘、按 H 不再计次；游戏进行中两者仍正常",
+          f"已判定失败={lost}；按 U 后结果仍为 {game.result}={undo_blocked}；"
+          f"按 H 后提示次数={game.hint_count}={hint_blocked}；"
+          f"游戏中按 H 计次={live.hint_count}",
+          lost and undo_blocked and hint_blocked and live_ok)
+
+
 # ==================== 报告输出 ====================
 
 # 作业第 5 节点名要求的六项测试，单独成表，方便直接贴进博客
@@ -791,6 +940,10 @@ def main():
     test_t19()
     test_t20()
     test_t21()
+    test_t22()
+    test_t23()
+    test_t24()
+    test_t25()
 
     width = 78
     print("=" * width)
