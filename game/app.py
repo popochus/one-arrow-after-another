@@ -67,7 +67,9 @@ class Game:
         self.state = self.STATE_MENU
         self.hover = None
         self.result = None
-        self.cleared_levels = set()   # 本次运行中已经通关的关卡索引
+        # 本次运行中已通关关卡的成绩：索引 -> {stars, score, time, mistakes, hints}
+        # 重玩同一关时只保留更好的成绩（先比星级，再比得分）。
+        self.records = {}
         self.start_level(0)
         self.state = self.STATE_MENU      # 启动时停留在开始界面
 
@@ -92,9 +94,81 @@ class Game:
         return self.resume_level > 0
 
     @property
+    def cleared_levels(self):
+        """本次运行中已通关的关卡索引集合。
+
+        由 records 推导而来，不单独存一份——成绩表才是唯一数据源，
+        再存一个 set 就得时刻担心两者不同步。
+        """
+        return set(self.records)
+
+    @property
+    def total_stars(self):
+        """本次运行累计获得的星数。"""
+        return sum(record["stars"] for record in self.records.values())
+
+    @property
+    def total_score(self):
+        """本次运行累计得分。"""
+        return sum(record["score"] for record in self.records.values())
+
+    @property
+    def max_stars(self):
+        """满星数：全部关卡都拿 3 星。"""
+        return len(self.levels) * C.STAR_MAX
+
+    @property
+    def max_score(self):
+        """满分：全部关卡都零失误且不超时。"""
+        return len(self.levels) * C.SCORE_BASE
+
+    @property
     def can_undo(self):
         """当前是否有可以撤销的步骤。"""
         return bool(self.history)
+
+    # ---------------- 计时与评价 ----------------
+
+    @property
+    def elapsed(self):
+        """本关用时（秒）。
+
+        胜负判定后定格为 final_time，不再随帧增长——否则玩家赖在结算
+        界面不走，用时也会一路涨上去。
+        """
+        return self.level_time if self.final_time is None else self.final_time
+
+    @property
+    def penalty_points(self):
+        """本关惩罚点数 = 失误次数 + 提示次数，星级由它决定。
+
+        撤销不在其中。撤销退还的是失误计数（见 undo()），它是"走错了退回来"
+        的容错机制；而提示是主动向游戏要答案，所以计入惩罚。
+        """
+        return self.mistakes + self.hint_count
+
+    @property
+    def level_stars(self):
+        """本关星级：惩罚点数每多 1 点降 1 星，最低 1 星（通关即有星）。"""
+        return max(C.STAR_MIN,
+                   C.STAR_MAX - self.penalty_points * C.STAR_LOSS_PER_PENALTY)
+
+    @property
+    def reference_time(self):
+        """本关参考时长（秒），超过它才开始扣分。"""
+        return self.arrow_total * C.SECONDS_PER_ARROW
+
+    @property
+    def level_score(self):
+        """本关得分。
+
+        游戏进行中取当前用时（可用于实时预览），结算后取定格用时。
+        """
+        overtime = max(0.0, self.elapsed - self.reference_time)
+        score = (C.SCORE_BASE
+                 - self.mistakes * C.SCORE_PER_MISTAKE
+                 - overtime * C.SCORE_PER_SECOND)
+        return max(C.SCORE_MIN, int(score))
 
     # ---------------- 关卡控制 ----------------
 
@@ -115,6 +189,12 @@ class Game:
         self.history = []           # 每步有效点击前压入的 (布局快照, 失误数)
         self.hint_cell = None       # 正在高亮的提示格
         self.hint_elapsed = 0.0
+
+        # ---- 计时与评价 ----
+        self.level_time = 0.0       # 本关已用时长（秒），只在游戏进行中累加
+        self.hint_count = 0         # 本关用了多少次提示（评星依据之一）
+        self.final_time = None      # 胜负判定那一刻的用时；一旦定格就不再走表
+
         self.state = self.STATE_PLAYING
 
     def start_game(self):
@@ -186,7 +266,27 @@ class Game:
         arrow = candidates[0]
         self.hint_cell = (arrow.row, arrow.col)
         self.hint_elapsed = 0.0
+        self.hint_count += 1        # 提示是主动求助，计入评级惩罚
         return True
+
+    def _record_result(self):
+        """通关时结算本关成绩，记入 records。
+
+        重玩同一关只保留更好的成绩：先比星级，星级相同再比得分。
+        这样"回头把某关刷成三星"有意义，也不会把已有的好成绩弄差。
+        """
+        self.final_time = self.level_time      # 先定格用时，下面的得分才读得到
+        entry = {
+            "stars": self.level_stars,
+            "score": self.level_score,
+            "time": self.final_time,
+            "mistakes": self.mistakes,
+            "hints": self.hint_count,
+        }
+        previous = self.records.get(self.level_index)
+        if previous is None or (entry["stars"], entry["score"]) > (
+                previous["stars"], previous["score"]):
+            self.records[self.level_index] = entry
 
     # ---------------- 主循环 ----------------
 
@@ -212,9 +312,15 @@ class Game:
                 elif event.key == pygame.K_r and self.state in (
                         self.STATE_PLAYING, self.STATE_RESULT):
                     self.restart()
-                elif event.key == pygame.K_u and self.state == self.STATE_PLAYING:
+                # 键盘快捷键同样要受"胜负已定"的约束：鼠标路径在
+                # on_click 里已被 result 挡下，这里不加就是个漏洞——
+                # 判定失败后按 U 能把 result 清掉接着玩（"失误用尽即失败"形同虚设），
+                # 按 H 则会白白多记一次提示，把星级拉低。
+                elif (event.key == pygame.K_u and self.state == self.STATE_PLAYING
+                      and self.result is None):
                     self.undo()
-                elif event.key == pygame.K_h and self.state == self.STATE_PLAYING:
+                elif (event.key == pygame.K_h and self.state == self.STATE_PLAYING
+                      and self.result is None):
                     self.show_hint()
                 elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
                     if self.state == self.STATE_MENU:
@@ -299,7 +405,7 @@ class Game:
             self.fly_anims.append(FlyOut(arrow, distance))
             if self.board.remaining == 0:
                 self.result = "win"
-                self.cleared_levels.add(self.level_index)   # 记录进度，供「继续游戏」使用
+                self._record_result()   # 结算本关星级与得分（「继续游戏」也据此查进度）
                 self.finish_delay = C.FLY_OUT_DURATION + C.FINISH_DELAY
                 # 最后一箭只响通关音。它的琶音本身已经表达了"完成了"，
                 # 再叠一个飞出音只会让两段声音糊在一起。
@@ -313,6 +419,7 @@ class Game:
             audio.play("hit")
             if self.mistakes >= self.MAX_MISTAKES:
                 self.result = "lose"
+                self.final_time = self.level_time     # 失败也停表，结算里要显示用时
                 self.finish_delay = C.SHAKE_DURATION + C.FINISH_DELAY
 
     def _on_select_click(self, pos):
@@ -326,6 +433,11 @@ class Game:
 
     def update(self, dt):
         """推进动画与计时器。"""
+        # 只在"游戏进行中且胜负未定"时走表：结算界面、开始界面与选关界面
+        # 都不计时，否则玩家在结算页停留也会被算进用时。
+        if self.state == self.STATE_PLAYING and self.result is None:
+            self.level_time += dt
+
         self._update_hover()
 
         for anim in self.fly_anims:

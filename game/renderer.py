@@ -123,13 +123,15 @@ def assist_actions(game):
 
     只在游戏进行中出现；已经无可撤销的步骤时，「撤销」置灰不可点。
     胜负判定后（动画播完前）两个按钮一起置灰，与锁死的棋盘保持一致。
+    「提示」按钮上带本关已用次数——提示会拉低星级，得让玩家看得见用量。
     """
     if game.state != game.STATE_PLAYING:
         return []
     locked = game.result is not None
+    hint_text = "提示" if not game.hint_count else f"提示 ×{game.hint_count}"
     return [
         ("undo", "撤销", locked or not game.can_undo),
-        ("hint", "提示", locked),
+        ("hint", hint_text, locked),
     ]
 
 
@@ -211,6 +213,37 @@ def _draw_hint_glow(surface, center, pulse):
     surface.blit(layer, layer.get_rect(center=center))
 
 
+def draw_star(surface, center, radius, filled=True):
+    """画一颗五角星（外顶点与内顶点交替，共 10 个点）。
+
+    自己画多边形而不依赖字体里的 ★ 字形——中文字体对这类符号的支持并不一致，
+    缺字形时会渲染成方块。filled=False 画成灰色的"未点亮"状态。
+    """
+    cx, cy = center
+    inner = radius * 0.42
+    points = []
+    for index in range(10):
+        r = radius if index % 2 == 0 else inner
+        angle = -math.pi / 2 + index * math.pi / 5      # 从正上方起，顺时针
+        points.append((cx + r * math.cos(angle), cy + r * math.sin(angle)))
+
+    color = C.COLOR_STAR if filled else C.COLOR_STAR_EMPTY
+    pygame.draw.polygon(surface, color, points)
+    if filled:
+        pygame.draw.polygon(surface, C.COLOR_STAR_EDGE, points, width=2)
+
+
+def draw_star_row(surface, center, stars, total=3, radius=30, gap=26):
+    """一排星，前 stars 颗点亮，其余画成灰色。"""
+    if total <= 0:
+        return
+    step = radius * 2 + gap
+    x0 = center[0] - step * (total - 1) / 2
+    for index in range(total):
+        draw_star(surface, (x0 + index * step, center[1]), radius,
+                  filled=index < stars)
+
+
 def draw_button(surface, rect, text, secondary=False, disabled=False):
     """统一样式的按钮，鼠标悬停时颜色变化。
 
@@ -260,6 +293,17 @@ def _draw_menu(surface, game):
     if game.has_progress:
         draw_button(surface, menu_continue_rect(),
                     f"继续游戏 · 第 {game.resume_level + 1} 关", secondary=True)
+
+    # 已有成绩时显示累计战绩。这里判 records 而不是 has_progress：
+    # 玩家若从选关界面直接通关了靠后的关卡、第 1 关反而没打，
+    # has_progress 会是 False（「继续游戏」按第一个未通关关卡算），
+    # 但成绩确实存在，不该藏起来。
+    if game.records:
+        stat = C.get_font(24).render(
+            f"已得 {game.total_stars} / {game.max_stars} 星"
+            f"   ·   总分 {game.total_score} / {game.max_score}",
+            True, C.COLOR_SCORE_VALUE)
+        surface.blit(stat, stat.get_rect(center=(C.WINDOW_WIDTH // 2, 934)))
 
     tip = C.get_font(22).render(
         f"每关 {game.MAX_MISTAKES} 次失误机会，用尽即失败", True, C.COLOR_TEXT_MUTED)
@@ -313,29 +357,49 @@ def _draw_level_card(surface, game, index, level):
     surface.blit(name, (badge.right + 22, rect.centery - name.get_height() // 2))
 
     if cleared:
-        status_text, status_color = "已通关", C.COLOR_CARD_DONE
+        # 已通关：右侧放该关的最佳成绩——三颗小星 + 得分。
+        # 星星本身已经表达了"通关了"，就不必再写一遍「已通关」。
+        record = game.records[index]
+        score_label = C.get_font(22).render(f"{record['score']} 分", True,
+                                            C.COLOR_TEXT_MUTED)
+        surface.blit(score_label,
+                     score_label.get_rect(midright=(rect.right - 26, rect.centery)))
+
+        radius, gap = 11, 8
+        step = radius * 2 + gap
+        right_center = rect.right - 26 - score_label.get_width() - 24 - radius
+        for i in range(C.STAR_MAX):
+            x = right_center - (C.STAR_MAX - 1 - i) * step
+            draw_star(surface, (x, rect.centery), radius,
+                      filled=i < record["stars"])
     else:
-        status_text, status_color = f"{level.board.remaining} 个箭头", C.COLOR_TEXT_MUTED
-    status = C.get_font(24).render(status_text, True, status_color)
-    surface.blit(status, status.get_rect(midright=(rect.right - 26, rect.centery)))
+        status = C.get_font(24).render(
+            f"{level.board.remaining} 个箭头", True, C.COLOR_TEXT_MUTED)
+        surface.blit(status, status.get_rect(midright=(rect.right - 26, rect.centery)))
 
 
 def _draw_hud(surface, game):
-    """顶部信息栏：关卡名、剩余箭头、失误次数。"""
+    """顶部信息栏：关卡名、剩余箭头、用时、失误次数。"""
     level_name = game.levels[game.level_index].name
     title = C.get_font(40).render(level_name, True, C.COLOR_TEXT)
     surface.blit(title, title.get_rect(center=(C.WINDOW_WIDTH // 2, 104)))
 
+    # 用时夹在中间：它每帧都在变，放两侧会让另外两项跟着左右晃动。
     label_font = C.get_font(26)
-    left = label_font.render(f"剩余箭头 {game.board.remaining}", True, C.COLOR_TEXT_MUTED)
-    mistake_color = C.COLOR_DANGER if game.mistakes else C.COLOR_TEXT_MUTED
-    right = label_font.render(
-        f"失误 {game.mistakes} / {game.MAX_MISTAKES}", True, mistake_color)
+    labels = [
+        label_font.render(f"剩余箭头 {game.board.remaining}", True, C.COLOR_TEXT_MUTED),
+        label_font.render(f"用时 {game.elapsed:.1f} 秒", True, C.COLOR_TEXT_MUTED),
+        label_font.render(
+            f"失误 {game.mistakes} / {game.MAX_MISTAKES}", True,
+            C.COLOR_DANGER if game.mistakes else C.COLOR_TEXT_MUTED),
+    ]
 
-    gap = 60
-    x = (C.WINDOW_WIDTH - left.get_width() - gap - right.get_width()) // 2
-    surface.blit(left, (x, 170))
-    surface.blit(right, (x + left.get_width() + gap, 170))
+    gap = 44
+    total = sum(label.get_width() for label in labels) + gap * (len(labels) - 1)
+    x = (C.WINDOW_WIDTH - total) // 2
+    for label in labels:
+        surface.blit(label, (x, 170))
+        x += label.get_width() + gap
 
 
 def _draw_board(surface, game):
@@ -464,18 +528,39 @@ def _draw_result(surface, game):
         title_text, title_color = "失误次数用完了", C.COLOR_DANGER
 
     title = C.get_font(58).render(title_text, True, title_color)
-    surface.blit(title, title.get_rect(center=(C.WINDOW_WIDTH // 2, 540)))
+    surface.blit(title, title.get_rect(center=(C.WINDOW_WIDTH // 2, 470)))
 
-    if win:
-        if game.has_next_level:
-            detail = f"本关 {game.arrow_total} 个箭头已全部清除"
-        else:
-            detail = f"全部 {len(game.levels)} 个关卡已通关，玩得不错"
-    else:
-        cleared = game.arrow_total - game.board.remaining
-        detail = f"已清除 {cleared} 个，还剩 {game.board.remaining} 个"
+    if not win:
+        # 失败不评星：星级衡量的是"通关质量"，没通关就不该有星。
+        clear_count = game.arrow_total - game.board.remaining
+        detail = (f"已清除 {clear_count} 个，还剩 {game.board.remaining} 个"
+                  f"   ·   用时 {game.elapsed:.1f} 秒")
+        sub = C.get_font(26).render(detail, True, C.COLOR_TEXT_MUTED)
+        surface.blit(sub, sub.get_rect(center=(C.WINDOW_WIDTH // 2, 590)))
+        return
+
+    # ---- 通关：星级 + 本关得分 + 成绩明细 ----
+    # 这里显示的是"本次"成绩而非历史最佳：重玩打得更差时，卡片上的星星
+    # 会保留更好的那次（见 _record_result），但结算当面要如实反映这一局。
+    draw_star_row(surface, (C.WINDOW_WIDTH // 2, 570), game.level_stars,
+                  C.STAR_MAX, radius=34, gap=30)
+
+    score = C.get_font(46).render(f"得分 {game.level_score}", True,
+                                  C.COLOR_SCORE_VALUE)
+    surface.blit(score, score.get_rect(center=(C.WINDOW_WIDTH // 2, 660)))
+
+    detail = (f"用时 {game.elapsed:.1f} 秒   ·   失误 {game.mistakes} 次"
+              f"   ·   提示 {game.hint_count} 次")
     sub = C.get_font(26).render(detail, True, C.COLOR_TEXT_MUTED)
-    surface.blit(sub, sub.get_rect(center=(C.WINDOW_WIDTH // 2, 620)))
+    surface.blit(sub, sub.get_rect(center=(C.WINDOW_WIDTH // 2, 730)))
+
+    if game.has_next_level:
+        note = f"本关 {game.arrow_total} 个箭头已全部清除"
+    else:
+        note = (f"总分 {game.total_score} / {game.max_score}"
+                f"   ·   星数 {game.total_stars} / {game.max_stars}")
+    foot = C.get_font(26).render(note, True, C.COLOR_TEXT_MUTED)
+    surface.blit(foot, foot.get_rect(center=(C.WINDOW_WIDTH // 2, 790)))
 
 
 def render(surface, game):
